@@ -88,9 +88,7 @@ pub trait OpenInputHidReport: Default {
     type PullReport<'a>
     where
         Self: 'a;
-    type PushReport<'a>
-    where
-        Self: 'a;
+    type PushReport<'r>;
 
     // TODO I am sorta abusing UsbError for my own errors, should probably use a custom err type
     fn pull_ep_out<'a, 'ep, B: UsbBus>(
@@ -98,10 +96,10 @@ pub trait OpenInputHidReport: Default {
         hid: &mut HIDClass<'ep, B>,
     ) -> Result<Self::PullReport<'a>, OpenInputReportError>;
 
-    fn push_report<'b, 'ep, B: UsbBus>(
+    fn push_report<'r, 'ep, B: UsbBus>(
         &mut self,
         hid: &mut HIDClass<'ep, B>,
-        report: Self::PushReport<'b>,
+        report: Self::PushReport<'r>,
     ) -> Result<(), OpenInputReportError>;
 }
 
