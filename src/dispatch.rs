@@ -1,6 +1,6 @@
 use heapless::{FnvIndexMap, String, Vec};
 
-use crate::{OiReport, OPENINPUT_SHORT_REPORT_ID};
+use crate::{OiReport, OPENINPUT_SHORT_REPORT_ID, LONG_LEN, SHORT_LEN};
 
 const ERROR_FUNCTION_PAGE: u8 = 0xFF;
 const INFO_FUNCTION_PAGE: u8 = 0x00;
@@ -86,9 +86,6 @@ impl Error {
 const DISPATCH_PREFIX_LEN: usize = 3;
 /// ReportId, FnPage (0xFF), ErrorId, FnPage, FnId
 const ERROR_PREFIX_LEN: usize = DISPATCH_PREFIX_LEN + 2;
-
-const SHORT_LEN: usize = 8;
-const LONG_LEN: usize = 32;
 
 // TODO better names
 const DISPATCH_LONG_RET_LEN: usize = LONG_LEN - DISPATCH_PREFIX_LEN;

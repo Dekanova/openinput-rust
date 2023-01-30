@@ -1,4 +1,8 @@
+#![cfg_attr(not(test), no_std)]
+
 pub use keyboard::OiKeyboardReport;
+use serde::ser::SerializeTuple;
+use serde::Serialize;
 use usb_device::class_prelude::UsbBus;
 use usb_device::UsbError;
 use usbd_hid::hid_class::HIDClass;
@@ -21,9 +25,15 @@ const REPORT_BUFFER_SIZE: usize = 64;
 const OPENINPUT_SHORT_REPORT_ID: u8 = 0x20;
 const OPENINPUT_LONG_REPORT_ID: u8 = 0x21;
 
+const SHORT_LEN: usize = 8;
+const LONG_LEN: usize = 32;
+
 /// OpenInput Progocol version [major, minor, patch]
 pub const PROTOCOL_VERSION: [u8; 3] = [0, 0, 1];
 
+pub type OpenInputKeyboardHID<'ep, B> = OpenInputHIDClass<'ep, B, OiKeyboardReport>;
+
+/// Primary interface between openinput and the HID class
 pub struct OpenInputHIDClass<'ep, B: UsbBus, Report: OpenInputHidReport> {
     pub inner: HIDClass<'ep, B>,
     // inner report
@@ -38,7 +48,7 @@ impl<'ep, B: UsbBus, R: OpenInputHidReport> OpenInputHIDClass<'ep, B, R> {
         }
     }
 
-    pub fn pull_host_data<'a>(&'a mut self) -> Result<R::PullReport<'a>, OpenInputReportError> {
+    pub fn pull_host_data<'a>(&'a mut self) -> Result<R::PullReport<'a>, OIError> {
         let Self { inner, report } = self;
         report.pull_ep_out(inner)
     }
@@ -70,15 +80,18 @@ impl TryFrom<u8> for OiReportId {
 }
 
 // TODO go back thru and fix errors
-pub enum OpenInputReportError {
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum OIError {
+    SerializationError,
     InternalError,
     FuckyBuffer,
     UsbError(UsbError),
 }
 
-impl From<UsbError> for OpenInputReportError {
+impl From<UsbError> for OIError {
     fn from(src: UsbError) -> Self {
-        OpenInputReportError::UsbError(src)
+        OIError::UsbError(src)
     }
 }
 
@@ -88,26 +101,51 @@ pub trait OpenInputHidReport: Default {
     type PullReport<'a>
     where
         Self: 'a;
-    type PushReport<'r>;
+    type PushReport<'r>: Serialize;
 
-    // TODO I am sorta abusing UsbError for my own errors, should probably use a custom err type
     fn pull_ep_out<'a, 'ep, B: UsbBus>(
         &'a mut self,
         hid: &mut HIDClass<'ep, B>,
-    ) -> Result<Self::PullReport<'a>, OpenInputReportError>;
+    ) -> Result<Self::PullReport<'a>, OIError>;
 
     fn push_report<'r, 'ep, B: UsbBus>(
         &mut self,
         hid: &mut HIDClass<'ep, B>,
         report: Self::PushReport<'r>,
-    ) -> Result<(), OpenInputReportError>;
+    ) -> Result<(), OIError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct OiReport<'a> {
     id: u8,
     function_page: u8,
     function_id: u8,
     data: &'a [u8],
+}
+
+impl<'a> serde::Serialize for OiReport<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let size = if self.id == OPENINPUT_LONG_REPORT_ID {
+            LONG_LEN
+        } else if self.id == OPENINPUT_SHORT_REPORT_ID {
+            SHORT_LEN
+        } else {
+            panic!("unexpected report id")
+        };
+        let mut s = serializer.serialize_tuple(size)?;
+        s.serialize_element(&self.id)?;
+        s.serialize_element(&self.function_page)?;
+        s.serialize_element(&self.function_id)?;
+        // WTF why do i need to do this??
+        for i in self.data {
+            s.serialize_element(i)?;
+        }
+        s.end()
+    }
 }
 
 impl<'a> OiReport<'a> {
@@ -126,6 +164,10 @@ impl<'a> OiReport<'a> {
             function_id,
             data,
         })
+    }
+
+    pub fn is_short(&self) -> bool {
+        self.id == OPENINPUT_SHORT_REPORT_ID
     }
 
     // TODO use consts for len
@@ -165,18 +207,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a() {
-        OiKeyboardReport::default();
-    }
-
-    #[test]
     /// make sure generated descriptor roughly equals openinput's
     fn conformance() {
         let desc = OiKeyboardReport::desc();
         let desc_hex = hex::encode(desc);
         let oi = hex::encode(OI_DESC);
 
-        println!("got\nexpect\n{}\n{}", desc_hex, oi);
+        println!(
+            "got\nexpect\n{}\n{}",
+            desc_hex.replace("c0", "c0\n"),
+            oi.replace("c0", "c0\n")
+        );
         assert!(desc_hex.contains(&oi), "\n{:x?}\n{:x?}", desc, OI_DESC);
     }
 

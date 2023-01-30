@@ -11,10 +11,14 @@ authors = ["Dekanova LLC, mriise<me@mriise.net>"]
 usbd-hid = "0.6.1"
 usb-device = "0.2.9"
 heapless = "0.7.16"
+defmt = { version = "0.3.2", optional = true}
+serde = {version = "*", default-features = false, features = ["derive"]}
+ssmarshal = {version = "*", default-features = false}
 
 [dev-dependencies]
 hex = "0.4.3"
 
 [features]
 dispatch = []
-default = ["dispatch"]
+use_defmt = ["defmt", "usb-device/defmt"]
+default = ["dispatch", "use_defmt"]

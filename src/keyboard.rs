@@ -5,12 +5,12 @@ use usbd_hid::hid_class::{ReportInfo, ReportType};
 use usbd_hid::Result as UsbResult;
 use usbd_hid::{descriptor::generator_prelude::*, hid_class::HIDClass};
 
-use crate::{OiReport, OpenInputReportError};
+use crate::{OIError, OiReport};
 
 use super::OpenInputHidReport;
 
 #[gen_hid_descriptor(
-    (collection = APPLICATION, usage_page = GENERIC_DESKTOP, usage = KEYBOARD) = {
+    (collection = APPLICATION, usage_page = GENERIC_DESKTOP, usage = KEYBOARD, report_id = 0x02) = {
         (usage_page = KEYBOARD, usage_min = 0xE0, usage_max = 0xE7) = {
             #[packed_bits 8] #[item_settings data,variable,absolute] modifier=input;
         };
@@ -46,6 +46,7 @@ use super::OpenInputHidReport;
     }
 )]
 #[derive(Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct OiKeyboardReport {
     pub modifier: u8,
     pub reserved: u8,
@@ -79,7 +80,7 @@ impl TryFrom<u8> for KeyboardReportId {
 }
 
 // TODO use serialize/deserialize
-
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OiKeyboardOutputReport<'a> {
     /// Keyboard leds bitfeild
     Keyboard(u8),
@@ -87,17 +88,41 @@ pub enum OiKeyboardOutputReport<'a> {
     OpenInput(OiReport<'a>),
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct KeyboardInputReport {
     pub modifier: u8,
     pub reserved: u8,
     pub keycodes: [u8; 6],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OiKeyboardInputReport<'a> {
     /// Keyboard report
     Keyboard(KeyboardInputReport),
     /// Openinput short/long report
     OpenInput(OiReport<'a>),
+}
+
+impl<'a> Serialize for OiKeyboardInputReport<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            OiKeyboardInputReport::Keyboard(kb) => {
+                // report id + 8 bytes
+                let mut s = serializer.serialize_tuple(8)?;
+                // s.serialize_element(&(KeyboardReportId::Keyboard as u8))?;
+                s.serialize_element(&kb.modifier)?;
+                s.serialize_element(&kb.reserved)?;
+                s.serialize_element(&kb.keycodes)?;
+                s.end()
+            }
+            OiKeyboardInputReport::OpenInput(oi) => oi.serialize(serializer),
+        }
+    }
 }
 
 impl OpenInputHidReport for OiKeyboardReport {
@@ -108,7 +133,7 @@ impl OpenInputHidReport for OiKeyboardReport {
     fn pull_ep_out<'a, 'ep, B: UsbBus>(
         &'a mut self,
         hid: &mut HIDClass<'ep, B>,
-    ) -> Result<Self::PullReport<'a>, OpenInputReportError> {
+    ) -> Result<Self::PullReport<'a>, OIError> {
         let mut temp_buf = [0; super::REPORT_BUFFER_SIZE];
         // TODO should probably read from interrupt out ep as well (as per spec)
         let report = hid.pull_raw_report(&mut temp_buf)?;
@@ -134,7 +159,7 @@ impl OpenInputHidReport for OiKeyboardReport {
                 if buf.len() == 1 {
                     Ok(OiKeyboardOutputReport::Keyboard(buf[0]))
                 } else {
-                    Err(OpenInputReportError::FuckyBuffer)
+                    Err(OIError::FuckyBuffer)
                 }
             }
             KeyboardReportId::OpenInputShort => {
@@ -146,7 +171,7 @@ impl OpenInputHidReport for OiKeyboardReport {
                         OiReport::read(&self.input_short_buf).map_err(|_| UsbError::ParseError)?,
                     ))
                 } else {
-                    Err(OpenInputReportError::FuckyBuffer)
+                    Err(OIError::FuckyBuffer)
                 }
             }
             KeyboardReportId::OpenInputLong => {
@@ -158,7 +183,7 @@ impl OpenInputHidReport for OiKeyboardReport {
                         OiReport::read(&self.input_long_buf).map_err(|_| UsbError::ParseError)?,
                     ))
                 } else {
-                    Err(OpenInputReportError::FuckyBuffer)
+                    Err(OIError::FuckyBuffer)
                 }
             }
         }
@@ -168,26 +193,26 @@ impl OpenInputHidReport for OiKeyboardReport {
         &mut self,
         hid: &mut HIDClass<'ep, B>,
         report: Self::PushReport<'b>,
-    ) -> Result<(), OpenInputReportError> {
-        let report = match report {
-            OiKeyboardInputReport::Keyboard(kb) => {
-                let mut v: Vec<u8, 32> = Vec::new();
-                // TODO do i need to do prepend 0x02?
-                v.push(KeyboardReportId::Keyboard as u8)
-                    .map_err(|_| OpenInputReportError::InternalError)?;
-
-                v.push(kb.modifier)
-                    .map_err(|_| OpenInputReportError::InternalError)?;
-                v.push(kb.reserved)
-                    .map_err(|_| OpenInputReportError::InternalError)?;
-                v.extend_from_slice(&kb.keycodes)
-                    .map_err(|_| OpenInputReportError::InternalError)?;
-                v
-            }
-            OiKeyboardInputReport::OpenInput(oi) => oi.into(),
-        };
-
-        hid.push_raw_input(report.as_slice())?;
+    ) -> Result<(), OIError> {
+        let mut buf = [0; 64];
+        let m = ssmarshal::serialize(&mut buf, &report).map_err(|_| OIError::SerializationError)?;
+        hid.push_raw_input(&buf[..m])?;
         Ok(())
     }
 }
+
+// pub fn write(&mut self, data: &[u8]) -> Result<usize, Error> {
+//     if self.expect_interrupt_in_complete {
+//         return Ok(0);
+//     }
+
+//     if data.len() >= 8 {
+//         self.expect_interrupt_in_complete = true;
+//     }
+
+//     match self.endpoint_interrupt_in.write(data) {
+//         Ok(count) => Ok(count),
+//         Err(UsbError::WouldBlock) => Ok(0),
+//         Err(_) => Err(Error),
+//     }
+// }
